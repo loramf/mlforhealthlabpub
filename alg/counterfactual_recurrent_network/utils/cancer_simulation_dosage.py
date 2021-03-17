@@ -57,7 +57,7 @@ cancer_stage_observations = {'I': 1432,
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 # Simulation Functions
 
-def get_confounding_params(num_patients, chemo_coeff, radio_coeff, chemo_dosage_c_coeff, radio_dosage_c_coeff): 
+def get_confounding_params(num_patients, chemo_coeff, radio_coeff, chemo_dosage_coeff, radio_dosage_coeff): 
     """
 
     Get original simulation parameters, and add extra ones to control confounding
@@ -69,6 +69,9 @@ def get_confounding_params(num_patients, chemo_coeff, radio_coeff, chemo_dosage_
     :param radio_dosage_c_coeff: Bias on action policy for radiotherapy dosage
     :return:
     """
+    #alpha_max - chemo_dosage_coeff -> the larger the more bias
+    #therefore the smaller chemo there is less Bias
+    #when alpha_max = 0 there is no bias therefore input represents confounding from 0 to 10
 
     basic_params = get_standard_params(num_patients)
     patient_types = basic_params['patient_types']
@@ -76,7 +79,9 @@ def get_confounding_params(num_patients, chemo_coeff, radio_coeff, chemo_dosage_
     tumour_stage_centres.sort()
 
     d_max = calc_diameter(tumour_death_threshold)
-    alpha_max = 9.0
+    alpha_max = 10.0
+    chemo_dosage_c_coeff = chemo_dosage_coeff
+    radio_dosage_c_coeff = radio_dosage_coeff
     chemo_dosage_coeff = alpha_max - chemo_dosage_c_coeff
     radio_dosage_coeff = alpha_max - radio_dosage_c_coeff
     basic_params['d_max'] = d_max
@@ -221,7 +226,7 @@ def get_standard_params(num_patients):  # additional params
     return output_params
 
 
-def simulate(simulation_params, num_time_steps, assigned_actions=None):
+def simulate(simulation_params, num_time_steps, round = True, assigned_actions=None):
     """
     Core routine to generate simulation paths
 
@@ -357,7 +362,12 @@ def simulate(simulation_params, num_time_steps, assigned_actions=None):
                     radio_dosage_beta[i,t] = 2 * radio_dosage_alpha_beta_max[0] - radio_dosage_alpha_intercept[0] - (radio_dosage_alpha_beta_max[0] - radio_dosage_alpha_intercept[0]) * cancer_metric_used / (d_max / 2)
 
                 radio_dosage_rv = np.random.beta(radio_dosage_alpha[i,t], radio_dosage_beta[i,t])
+                #scale to radio dosage range = 2 * normal radio amount
                 radio_dosage[i, t] = radio_dosage_rv * 2 * radio_amt[0]
+                if round == True:
+                    #round to the nearest 0.5
+                    radio_dosage[i, t] = round(radio_dosage[i, t] * 2) / 2
+                
 
             if chemo_application_rvs[i, t] < chemo_prob:
                 # Apply chemo treatment
@@ -371,7 +381,12 @@ def simulate(simulation_params, num_time_steps, assigned_actions=None):
                     chemo_dosage_beta[i,t] = 2 * chemo_dosage_alpha_beta_max[0] - chemo_dosage_alpha_intercept[0] - (chemo_dosage_alpha_beta_max[0] - chemo_dosage_alpha_intercept[0]) * cancer_metric_used / (d_max / 2)
 
                 chemo_dosage_rv = np.random.beta(chemo_dosage_alpha[i,t], chemo_dosage_beta[i,t])
+                
+                #scale to chemo dosage range = 2 * normal radio amount
                 chemo_application_dosage[i,t] = chemo_dosage_rv * 2 * chemo_amt[0]
+                if round == True:
+                    #round to the nearest 1
+                    chemo_application_dosage[i, t] = round(chemo_application_dosage[i, t]) / 1
 
             # Update chemo dosage
             chemo_dosage[i, t] = previous_chemo_dose * np.exp(-np.log(2) / drug_half_life) + chemo_application_dosage[i,t]
@@ -416,7 +431,7 @@ def simulate(simulation_params, num_time_steps, assigned_actions=None):
     return outputs
 
 
-def simulate_counterfactual_test_data(simulation_params, num_time_steps, assigned_actions=None):
+def simulate_counterfactual_test_data(simulation_params, num_time_steps, round = True, assigned_actions=None):
     """
     Core routine to generate simulation test paths to assess all of the counterfactuals.
 
@@ -555,6 +570,10 @@ def simulate_counterfactual_test_data(simulation_params, num_time_steps, assigne
 
                 radio_dosage_rv = np.random.beta(factual_radio_dosage_alpha[t], factual_radio_dosage_beta[t])
                 factual_radio_dosage[t] = radio_dosage_rv * 2 * radio_amt[0]
+            
+                if round == True:
+                    #round to the nearest 0.5
+                    factual_radio_dosage[t] = round(factual_radio_dosage[t] * 2) / 2
 
             if chemo_application_rvs[t] < chemo_prob:
                 # Apply chemo treatment
@@ -569,6 +588,9 @@ def simulate_counterfactual_test_data(simulation_params, num_time_steps, assigne
 
                 chemo_dosage_rv = np.random.beta(factual_chemo_dosage_alpha[t], factual_chemo_dosage_beta[t])
                 factual_chemo_application_dosage[t] = chemo_dosage_rv * 2 * chemo_amt[0]
+                if round == True:
+                    #round to the nearest 1
+                    factual_chemo_application_dosage[t] = round(factual_chemo_application_dosage[t]) / 1
 
             # Update chemo dosage
             factual_chemo_dosage[t] = previous_chemo_dose * np.exp(-np.log(2) / drug_half_life) + factual_chemo_application_dosage[t]
@@ -661,7 +683,7 @@ def simulate_counterfactual_test_data(simulation_params, num_time_steps, assigne
     return outputs
 
 
-def simulate_sequence_test(simulation_params, num_time_steps, projection_horizon, treatment_options):
+def simulate_sequence_test(simulation_params, num_time_steps, projection_horizon, treatment_options, round = True):
     """
     Core routine to generate simulation test paths to assess a set of counterfactuals for specified treatment options.
 
@@ -798,7 +820,13 @@ def simulate_sequence_test(simulation_params, num_time_steps, projection_horizon
                     factual_radio_dosage_beta[t] = 2 * radio_dosage_alpha_beta_max[0] - radio_dosage_alpha_intercept[0] - (radio_dosage_alpha_beta_max[0] - radio_dosage_alpha_intercept[0]) * cancer_metric_used / (d_max / 2)
 
                 radio_dosage_rv = np.random.beta(factual_radio_dosage_alpha[t], factual_radio_dosage_beta[t])
+
                 factual_radio_dosage[t] = radio_dosage_rv * 2 * radio_amt[0]
+
+                if round == True:
+                    #round to the nearest 0.5
+                    factual_radio_dosage[t] = round(factual_radio_dosage[t] * 2) / 2
+                
 
             if chemo_application_rvs[t] < chemo_prob:
                 # Apply chemo treatment
@@ -813,7 +841,9 @@ def simulate_sequence_test(simulation_params, num_time_steps, projection_horizon
 
                 chemo_dosage_rv = np.random.beta(factual_chemo_dosage_alpha[t], factual_chemo_dosage_beta[t])
                 factual_chemo_application_dosage[t] = chemo_dosage_rv * 2 * chemo_amt[0]
-
+                if round == True:
+                    #round to the nearest 1
+                    factual_chemo_application_dosage[t] = round(factual_chemo_application_dosage[t]) / 1
             # Update chemo dosage
             factual_chemo_dosage[t] = previous_chemo_dose * np.exp(-np.log(2) / drug_half_life) + factual_chemo_application_dosage[t]
 
@@ -950,7 +980,7 @@ def plot_treatments(patient):
 
 def plot_doses(patient):
     df = pd.DataFrame({'N(t)': outputs['cancer_volume'][patient],
-                       'C(t)': outputs['chemo_dosage'][patient],
+                       'C(t)': outputs['chemo_application_dosage'][patient],
                        'd(t)': outputs['radio_dosage'][patient],
                        })
     df = df[['N(t)', "C(t)", "d(t)"]]
@@ -984,12 +1014,12 @@ def plot_sigmoid_function():
     plt.show()
 
 
-def get_cancer_sim_data(chemo_coeff, radio_coeff, chemo_dosage_coeff, radio_dosage_coeff, alpha_max, b_load, b_save=False, seed=100, model_root='results', window_size=15):
+def get_cancer_sim_data(chemo_coeff, radio_coeff, chemo_dosage_coeff, radio_dosage_coeff, b_load, b_save=False, seed=100, model_root='results', window_size=15, round = True):
     if window_size == 15:
-        pickle_file = os.path.join(model_root, 'new_cancer_sim_{}_{}_{}_{}.p'.format(chemo_coeff, radio_coeff, chemo_dosage_coeff, radio_dosage_coeff, alpha_max))
+        pickle_file = os.path.join(model_root, 'new_cancer_sim_{}_{}_{}_{}.p'.format(chemo_coeff, radio_coeff, chemo_dosage_coeff, radio_dosage_coeff))
     else:
         pickle_file = os.path.join(model_root,
-                                   'new_cancer_sim_{}_{}_{}_{}_{}.p'.format(chemo_coeff, radio_coeff, chemo_dosage_coeff, radio_dosage_coeff, alpha_max, window_size))
+                                   'new_cancer_sim_{}_{}_{}_{}_{}.p'.format(chemo_coeff, radio_coeff, chemo_dosage_coeff, radio_dosage_coeff, window_size))
 
     def _generate():
         num_time_steps = 60  # about half a year
@@ -998,26 +1028,26 @@ def get_cancer_sim_data(chemo_coeff, radio_coeff, chemo_dosage_coeff, radio_dosa
 
         params = get_confounding_params(num_patients, chemo_coeff=chemo_coeff,
                                             radio_coeff=radio_coeff, chemo_dosage_coeff=chemo_dosage_coeff, 
-                                            radio_dosage_coeff=radio_dosage_coeff, alpha_max=alpha_max)
+                                            radio_dosage_coeff=radio_dosage_coeff)
         params['window_size'] = window_size
-        training_data = simulate(params, num_time_steps)
+        training_data = simulate(params, num_time_steps, round = round)
 
         params = get_confounding_params(int(num_patients / 10), chemo_coeff=chemo_coeff,
                                             radio_coeff=radio_coeff, chemo_dosage_coeff=chemo_dosage_coeff, 
-                                            radio_dosage_coeff=radio_dosage_coeff, alpha_max=alpha_max)
+                                            radio_dosage_coeff=radio_dosage_coeff)
         params['window_size'] = window_size
-        validation_data = simulate(params, num_time_steps)
+        validation_data = simulate(params, num_time_steps, round = round)
 
         params = get_confounding_params(int(num_patients / 10), chemo_coeff=chemo_coeff,
                                             radio_coeff=radio_coeff, chemo_dosage_coeff=chemo_dosage_coeff, 
-                                            radio_dosage_coeff=radio_dosage_coeff, alpha_max=alpha_max)
+                                            radio_dosage_coeff=radio_dosage_coeff)
         params['window_size'] = window_size
-        test_data_factuals = simulate(params, num_time_steps)
-        test_data_counterfactuals = simulate_counterfactual_test_data(params, num_time_steps)
+        test_data_factuals = simulate(params, num_time_steps, round = round)
+        test_data_counterfactuals = simulate_counterfactual_test_data(params, num_time_steps, round = round)
 
         params = get_confounding_params(int(num_patients / 10), chemo_coeff=chemo_coeff,
                                             radio_coeff=radio_coeff, chemo_dosage_coeff=chemo_dosage_coeff, 
-                                            radio_dosage_coeff=radio_dosage_coeff, alpha_max=alpha_max)
+                                            radio_dosage_coeff=radio_dosage_coeff)
         params['window_size'] = window_size
         treatment_options = np.array(
             [[(5, 0), (0, 0), (0, 0), (0, 0), (0, 0)],
@@ -1031,7 +1061,7 @@ def get_cancer_sim_data(chemo_coeff, radio_coeff, chemo_dosage_coeff, radio_dosa
              [(0, 0), (0, 0), (0, 0), (0, 2), (0, 0)],
              [(0, 0), (0, 0), (0, 0), (0, 0), (0, 2)]
              ])
-        test_data_seq = simulate_sequence_test(params, num_time_steps, 5, treatment_options)
+        test_data_seq = simulate_sequence_test(params, num_time_steps, round = round, 5, treatment_options)
 
         scaling_data = get_scaling_params(training_data)
 
@@ -1080,9 +1110,9 @@ if __name__ == "__main__":
 
 
     num_time_steps = 60  # 6 month followup
-    num_patients = 1 #200
+    num_patients = 10 #200
 
-    simulation_params = get_confounding_params(num_patients, chemo_coeff=5.0, radio_coeff=5.0, chemo_dosage_coeff=1, radio_dosage_coeff=1, alpha_max=10)
+    simulation_params = get_confounding_params(num_patients, chemo_coeff=0, radio_coeff=0, chemo_dosage_coeff=10, radio_dosage_coeff=10)
     simulation_params['window_size'] = 15
 
     projection_horizon = 5
@@ -1090,20 +1120,20 @@ if __name__ == "__main__":
         [[(1, 0), (0, 0), (0, 1), (0, 0), (0, 0)],
          [(0, 0), (1, 0), (0, 1), (0, 0), (0, 0)]])
 
-    #outputs = simulate(simulation_params, num_time_steps)
+    outputs = simulate(simulation_params, num_time_steps, round = True)
     #outputs = simulate_counterfactual_test_data(simulation_params, num_time_steps, assigned_actions=None)
-    outputs = simulate_sequence_test(simulation_params, num_time_steps, projection_horizon, treatment_options)
+    #outputs = simulate_sequence_test(simulation_params, num_time_steps, projection_horizon, treatment_options)
     #def simulate_sequence_test(simulation_params, num_time_steps, projection_horizon, treatment_options):
 
-    print(outputs['cancer_volume'][:10])
+    print(outputs['cancer_volume'][:1])
     #print(outputs['chemo_probabilities'][:1])
     #print(outputs['radio_probabilities'][:1])
-    print(outputs['radio_dosage'][:10])
-    print(outputs['chemo_dosage'][:10])
-    print(outputs['chemo_application_dosage'][:10])
+    print(outputs['radio_dosage'][:1])
+    print(outputs['chemo_dosage'][:1])
+    print(outputs['chemo_application_dosage'][:1])
 
     # Plot patient
-    i = 1
+    i = 0
     plot_treatments(i)
     plot_doses(i)
 
