@@ -43,9 +43,11 @@ def load_trained_model(dataset_test, hyperparams_file, model_name, model_folder,
 
 
 def get_processed_data(raw_sim_data,
-                       scaling_params):
+                       scaling_params,
+                       treatment_type = 'one_hot'):
     """
     Create formatted data to train both encoder and seq2seq atchitecture.
+    Option to format treatments as binary rather than categorical combinations.
     """
     mean, std = scaling_params
 
@@ -56,7 +58,7 @@ def get_processed_data(raw_sim_data,
     mean['radio_application'] = 0
     std['chemo_application'] = 1
     std['radio_application'] = 1
-
+    
     input_means = mean[
         ['cancer_volume', 'patient_types', 'chemo_application', 'radio_application']].values.flatten()
     input_stds = std[['cancer_volume', 'patient_types', 'chemo_application', 'radio_application']].values.flatten()
@@ -77,19 +79,24 @@ def get_processed_data(raw_sim_data,
     treatments = np.concatenate(
         [chemo_application[:, :-offset, np.newaxis], radio_application[:, :-offset, np.newaxis]], axis=-1)
 
-    one_hot_treatments = np.zeros(shape=(treatments.shape[0], treatments.shape[1], 4))
-    for patient_id in range(treatments.shape[0]):
-        for timestep in range(treatments.shape[1]):
-            if (treatments[patient_id][timestep][0] == 0 and treatments[patient_id][timestep][1] == 0):
-                one_hot_treatments[patient_id][timestep] = [1, 0, 0, 0]
-            elif (treatments[patient_id][timestep][0] == 1 and treatments[patient_id][timestep][1] == 0):
-                one_hot_treatments[patient_id][timestep] = [0, 1, 0, 0]
-            elif (treatments[patient_id][timestep][0] == 0 and treatments[patient_id][timestep][1] == 1):
-                one_hot_treatments[patient_id][timestep] = [0, 0, 1, 0]
-            elif (treatments[patient_id][timestep][0] == 1 and treatments[patient_id][timestep][1] == 1):
-                one_hot_treatments[patient_id][timestep] = [0, 0, 0, 1]
+    if treatment_type == 'one_hot':
 
-    one_hot_previous_treatments = one_hot_treatments[:, :-1, :]
+        one_hot_treatments = np.zeros(shape=(treatments.shape[0], treatments.shape[1], 4))
+
+        for patient_id in range(treatments.shape[0]):
+            for timestep in range(treatments.shape[1]):
+                if (treatments[patient_id][timestep][0] == 0 and treatments[patient_id][timestep][1] == 0):
+                    one_hot_treatments[patient_id][timestep] = [1, 0, 0, 0]
+                elif (treatments[patient_id][timestep][0] == 1 and treatments[patient_id][timestep][1] == 0):
+                    one_hot_treatments[patient_id][timestep] = [0, 1, 0, 0]
+                elif (treatments[patient_id][timestep][0] == 0 and treatments[patient_id][timestep][1] == 1):
+                    one_hot_treatments[patient_id][timestep] = [0, 0, 1, 0]
+                elif (treatments[patient_id][timestep][0] == 1 and treatments[patient_id][timestep][1] == 1):
+                    one_hot_treatments[patient_id][timestep] = [0, 0, 0, 1]
+
+        treatments = one_hot_treatments
+
+    previous_treatments = treatments[:, :-1, :]
 
     current_covariates = np.concatenate(
         [cancer_volume[:, :-offset, np.newaxis], patient_types[:, :-offset, np.newaxis]], axis=-1)
@@ -108,8 +115,8 @@ def get_processed_data(raw_sim_data,
         active_entries[i, :sequence_length, :] = 1
 
     raw_sim_data['current_covariates'] = current_covariates
-    raw_sim_data['previous_treatments'] = one_hot_previous_treatments
-    raw_sim_data['current_treatments'] = one_hot_treatments
+    raw_sim_data['previous_treatments'] = previous_treatments
+    raw_sim_data['current_treatments'] = hot_treatments
     raw_sim_data['outputs'] = outputs
     raw_sim_data['active_entries'] = active_entries
 
@@ -120,7 +127,6 @@ def get_processed_data(raw_sim_data,
     raw_sim_data['output_stds'] = output_stds
 
     return raw_sim_data
-
 
 def get_mse_at_follow_up_time(mean, output, active_entires):
         mses = np.sum(np.sum((mean - output) ** 2 * active_entires, axis=-1), axis=0) \

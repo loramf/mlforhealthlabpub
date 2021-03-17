@@ -20,7 +20,7 @@ import logging
 
 
 class CRN_Model:
-    def __init__(self, params, hyperparams, b_train_decoder=False):
+    def __init__(self, params, hyperparams, treatment_format = 'one_hot', b_train_decoder=False):
         self.num_treatments = params['num_treatments']
         self.num_covariates = params['num_covariates']
         self.num_outputs = params['num_outputs']
@@ -35,6 +35,7 @@ class CRN_Model:
         self.learning_rate = hyperparams['learning_rate']
 
         self.b_train_decoder = b_train_decoder
+        self.treatment_format = treatment_format
 
         tf.reset_default_graph()
 
@@ -53,6 +54,7 @@ class CRN_Model:
         self.alpha = tf.placeholder(tf.float32, [])  # Gradient reversal scalar
 
     def build_balancing_representation(self):
+        #RNN takes input: current covariates = (patient subgroup and previous treatment at each timestep)
         self.rnn_input = tf.concat([self.current_covariates, self.previous_treatments], axis=-1)
         self.sequence_length = self.compute_sequence_length(self.rnn_input)
 
@@ -84,10 +86,19 @@ class CRN_Model:
 
         treatments_network_layer = tf.layers.dense(balancing_representation_gr, self.fc_hidden_units,
                                                    activation=tf.nn.elu)
-        treatment_logit_predictions = tf.layers.dense(treatments_network_layer, self.num_treatments, activation=None)
-        treatment_prob_predictions = tf.nn.softmax(treatment_logit_predictions)
+        
+        treatment_final_prediction_layer = tf.layers.dense(treatments_network_layer, self.num_treatments, activation=None)
 
-        return treatment_prob_predictions
+        if self.treatment_format == 'one_hot':
+            treatment_predictions = tf.nn.softmax(treatment_final_prediction_layer)
+
+        elif self.treatment_format == 'binary':
+            treatment_predictions = tf.nn.sigmoid(treatment_final_prediction_layer)
+
+        elif self.treatment_format == 'continuous':
+            treatment_predictions = treatment_final_prediction_layer
+
+        return treatment_predictions
 
     def build_outcomes(self, balancing_representation):
         current_treatments_reshape = tf.reshape(self.current_treatments, [-1, self.num_treatments])
@@ -355,11 +366,14 @@ class CRN_Model:
                 shape=(batch_size, self.max_sequence_length, self.num_outputs))
 
             for sample in range(num_samples):
+                #this is done 50 times because each time the Dropout is different.
                 predicted_outputs = self.sess.run(self.predictions, feed_dict=feed_dict)
+                
                 predicted_outputs = np.reshape(predicted_outputs,
                                                newshape=(-1, self.max_sequence_length, self.num_outputs))
                 total_predictions += predicted_outputs
 
+            #predicted outcome is averaged across dropout samples
             total_predictions /= num_samples
 
             if (batch_id == num_batches - 1):
@@ -368,6 +382,7 @@ class CRN_Model:
                 batch_samples = range(batch_id * batch_size, (batch_id + 1) * batch_size)
 
             batch_id += 1
+            #predictions for each batch
             predictions[batch_samples] = total_predictions
 
         return predictions
@@ -415,11 +430,25 @@ class CRN_Model:
         return predicted_outputs
 
     def compute_loss_treatments_one_hot(self, target_treatments, treatment_predictions, active_entries):
+
         treatment_predictions = tf.reshape(treatment_predictions, [-1, self.max_sequence_length, self.num_treatments])
-        cross_entropy_loss = tf.reduce_sum(
-            (- target_treatments * tf.log(treatment_predictions + 1e-8)) * active_entries) \
-                             / tf.reduce_sum(active_entries)
-        return cross_entropy_loss
+
+        if self.treatment_format == 'one_hot':
+            loss = tf.reduce_sum(
+                (- target_treatments * tf.log(treatment_predictions + 1e-8)) * active_entries) \
+                                / tf.reduce_sum(active_entries)
+
+        elif self.treatment_format == 'binary':
+            # binary cross-entropy loss averaged across treatments
+            loss = tf.reduce_sum(
+                (- (target_treatments * tf.log(treatment_predictions + 1e-8) + (1 - target_treatments) * tf.log(1 - treatment_predictions + 1e-8))) * active_entries) \
+                                / (tf.reduce_sum(active_entries) * self.num_treatments)
+
+        elif self.treatment_format == 'continuous':
+            loss = tf.reduce_sum(tf.square(outputs - predictions) * active_entries) \
+                                / tf.reduce_sum(active_entries)
+
+        return loss
 
     def compute_loss_predictions(self, outputs, predictions, active_entries):
         predictions = tf.reshape(predictions, [-1, self.max_sequence_length, self.num_outputs])
