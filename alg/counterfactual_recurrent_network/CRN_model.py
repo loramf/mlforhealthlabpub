@@ -83,20 +83,41 @@ class CRN_Model:
 
     def build_treatment_assignments_one_hot(self, balancing_representation):
         balancing_representation_gr = flip_gradient(balancing_representation, self.alpha)
+        
+        #test out no adversarial training as a baseline
+        #balancing_representation_gr = flip_gradient(balancing_representation, 0)
 
         treatments_network_layer = tf.layers.dense(balancing_representation_gr, self.fc_hidden_units,
                                                    activation=tf.nn.elu)
-        
-        treatment_final_prediction_layer = tf.layers.dense(treatments_network_layer, self.num_treatments, activation=None)
-
+            
         if self.treatment_format == 'one_hot':
+            treatment_final_prediction_layer = tf.layers.dense(treatments_network_layer, self.num_treatments, activation=None)
             treatment_predictions = tf.nn.softmax(treatment_final_prediction_layer)
+        
+        if self.treatment_format == 'multi_one_hot':
+            #chemo_final_prediction_layer = tf.layers.dense(treatments_network_layer, 6, activation=None)
+            #radio_final_prediction_layer = tf.layers.dense(treatments_network_layer, 5, activation=None)
+            chemo_final_prediction_layer = tf.layers.dense(treatments_network_layer, 10, activation=None)
+            radio_final_prediction_layer = tf.layers.dense(treatments_network_layer, 8, activation=None)
+            chemo_predictions = tf.nn.softmax(chemo_final_prediction_layer)
+            radio_predictions = tf.nn.softmax(radio_final_prediction_layer)
+            treatment_predictions = tf.concat([chemo_predictions, radio_predictions], axis=-1)
 
         elif self.treatment_format == 'binary':
+            treatment_final_prediction_layer = tf.layers.dense(treatments_network_layer, self.num_treatments, activation=None)
             treatment_predictions = tf.nn.sigmoid(treatment_final_prediction_layer)
 
         elif self.treatment_format == 'continuous':
+            treatment_final_prediction_layer = tf.layers.dense(treatments_network_layer, self.num_treatments, activation=None)
             treatment_predictions = treatment_final_prediction_layer
+
+        elif self.treatment_format == 'p_continuous':
+            mean_predictions = tf.layers.dense(treatments_network_layer, self.num_treatments, activation=None)
+            logvariance_predictions = tf.layers.dense(treatments_network_layer, self.num_treatments, activation=tf.nn.relu)
+            treatment_predictions = tf.concat([mean_predictions, logvariance_predictions], axis=-1)
+        
+        else:
+            print("Unrecognised treatment")
 
         return treatment_predictions
 
@@ -134,6 +155,7 @@ class CRN_Model:
         self.sess.run(tf.global_variables_initializer())
         self.sess.run(tf.local_variables_initializer())
 
+        print("Starting training")
         for epoch in range(self.num_epochs):
             p = float(epoch) / float(self.num_epochs)
             alpha_current = 2. / (1. + np.exp(-10. * p)) - 1
@@ -162,7 +184,7 @@ class CRN_Model:
         validation_loss, validation_loss_outcomes, \
         validation_loss_treatments = self.compute_validation_loss(dataset_val)
 
-        validation_mse, _ = self.evaluate_predictions(dataset_val)
+        validation_mse, _, _, _, _, _ = self.evaluate_predictions(dataset_val)
 
         logging.info(
             "Epoch {} Summary| Validation total loss = {} | Validation outcome loss = {} | Validation treatment loss {} | Validation mse = {}".format(
@@ -431,12 +453,31 @@ class CRN_Model:
 
     def compute_loss_treatments_one_hot(self, target_treatments, treatment_predictions, active_entries):
 
-        treatment_predictions = tf.reshape(treatment_predictions, [-1, self.max_sequence_length, self.num_treatments])
+        if self.treatment_format == 'p_continuous':
+            treatment_predictions = tf.reshape(treatment_predictions, [-1, self.max_sequence_length, self.num_treatments*2])
+        else:
+            treatment_predictions = tf.reshape(treatment_predictions, [-1, self.max_sequence_length, self.num_treatments])
 
         if self.treatment_format == 'one_hot':
             loss = tf.reduce_sum(
                 (- target_treatments * tf.log(treatment_predictions + 1e-8)) * active_entries) \
                                 / tf.reduce_sum(active_entries)
+        
+        if self.treatment_format == 'multi_one_hot':
+            chemo_targets = target_treatments[:,:,:10]
+            radio_targets = target_treatments[:,:,10:]
+            chemo_predictions = treatment_predictions[:,:,:10]
+            radio_predictions = treatment_predictions[:,:,10:]
+
+            chemo_loss = tf.reduce_sum(
+                (- chemo_targets * tf.log(chemo_predictions + 1e-8)) * active_entries) \
+                                / tf.reduce_sum(active_entries)
+            
+            radio_loss = tf.reduce_sum(
+                (- radio_targets * tf.log(radio_predictions + 1e-8)) * active_entries) \
+                                / tf.reduce_sum(active_entries)
+
+            loss = tf.math.reduce_mean([chemo_loss, radio_loss])
 
         elif self.treatment_format == 'binary':
             # binary cross-entropy loss averaged across treatments
@@ -445,9 +486,20 @@ class CRN_Model:
                                 / (tf.reduce_sum(active_entries) * self.num_treatments)
 
         elif self.treatment_format == 'continuous':
-            loss = tf.reduce_sum(tf.square(outputs - predictions) * active_entries) \
+            loss = tf.reduce_sum(tf.square(target_treatments - treatment_predictions) * active_entries) \
                                 / tf.reduce_sum(active_entries)
 
+        elif self.treatment_format == 'p_continuous':
+            #outputs the mean and lognormal of the distribution
+
+            prediction_means = treatment_predictions[:,:,:self.num_treatments]
+            #prediction_variances =  treatment_predictions[:,:,self.num_treatments:]
+            #loss = (prediction_means - target_treatments) ** 2 / (2 * (prediction_variances + 1e-8)) + tf.math.log(prediction_variances + 1e-8) / 2
+            prediction_logvariances =  treatment_predictions[:,:,self.num_treatments:]
+            loss = (prediction_means - target_treatments) ** 2 / (2 * tf.math.exp(prediction_logvariances)) + prediction_logvariances / 2
+            
+            loss = tf.reduce_sum(loss) / tf.reduce_sum(active_entries)
+                    
         return loss
 
     def compute_loss_predictions(self, outputs, predictions, active_entries):
@@ -468,7 +520,7 @@ class CRN_Model:
 
         mse = self.get_mse_at_follow_up_time(unscaled_predictions, unscaled_outputs, active_entries)
         mean_mse = np.mean(mse)
-        return mean_mse, mse
+        return mean_mse, mse, dataset['current_treatments'], unscaled_predictions, unscaled_outputs, active_entries
 
     def get_mse_at_follow_up_time(self, prediction, output, active_entires):
         mses = np.sum(np.sum((prediction - output) ** 2 * active_entires, axis=-1), axis=0) \
@@ -494,6 +546,10 @@ class CRN_Model:
 
         save_path = saver.save(tf_session, os.path.join(model_dir, "{0}.ckpt".format(checkpoint_name)))
         logging.info("Model saved to: {0}".format(save_path))
+        print("""
+        #################################################################################
+        Model saved to: {0}
+        #################################################################################""".format(save_path))
 
     def load_network(self, tf_session, model_dir, checkpoint_name):
         load_path = os.path.join(model_dir, "{0}.ckpt".format(checkpoint_name))

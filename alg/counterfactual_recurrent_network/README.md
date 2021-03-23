@@ -1,3 +1,23 @@
+# Estimating Counterfactual Outcomes Over Time For Concurrent Treatments With Discretised and Continuous Dosage
+
+### Lora Frayling, 22/03/2021
+
+### Adapted from [Estimating counterfactual treatment outcomes over time through adversarially balanced representations](https://openreview.net/forum?id=BJg866NFvB)
+
+Changes
+- cancer_simulation_dosage.py: simulates data with dosage
+- CRN_model.py: adapted to allow different treatment formats, one_hot, multi_one_hot, binary, continuous and p_continuous
+- test_CRN_models.py: used to run model for various parameters
+- create_datasets.py: used to simulate datasets for varying levels of confounding.
+- all other relevant py files adapted to work wit different treatment formats
+
+With regards to the report:
+- multi_one_hot is used for IndD
+- continuous is used for ConD
+- p_continuous is used for ProbD
+
+# Borrowed from below:
+
 # [Estimating counterfactual treatment outcomes over time through adversarially balanced representations](https://openreview.net/forum?id=BJg866NFvB)
 
 ### Ioana Bica, Ahmed M. Alaa, James Jordon, Mihaela van der Schaar
